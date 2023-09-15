@@ -1,0 +1,23 @@
+[package]
+name = "khigy"
+version = "0.1.0"
+edition = "2021"
+
+
+[features]
+default = ["winit", "opengl", "vulkan"]
+opengl = ["smithay/renderer_gl", "smithay/backend_egl"]
+vulkan = ["smithay/backend_vulkan"]
+winit = ["smithay/backend_winit"]
+
+
+[dependencies]
+env_logger = "0.10.0"
+log = "0.4.20"
+anyhow = "1.0.75"
+
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "2d77640d1beea21e0cfbccbeec920db3d6dccfcf"
+default-features = false
+features = ["backend_libinput", "wayland_frontend"]
