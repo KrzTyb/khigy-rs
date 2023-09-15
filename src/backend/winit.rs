@@ -139,7 +139,7 @@ pub fn winit_dispatch(
         .renderer()
         .render(size, Transform::Flipped180)
         .unwrap();
-    frame.clear([1.0, 0.0, 0.0, 1.0], &[damage]).unwrap();
+    frame.clear([0.0, 0.0, 0.0, 1.0], &[damage]).unwrap();
     draw_render_elements(&mut frame, 1.0, &elements, &[damage]).unwrap();
     // We rely on the nested compositor to do the sync for us
     let _ = frame.finish().unwrap();

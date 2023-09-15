@@ -24,6 +24,9 @@ fn main() -> Result<()> {
     if cfg!(feature = "winit") {
         #[cfg(feature = "winit")]
         backend::winit::run(&mut event_loop, &mut data)?;
+    } else if cfg!(feature = "vulkan") {
+        #[cfg(feature = "vulkan")]
+        backend::vulkan::run(&mut event_loop, &mut data)?;
     } else {
         return Err(anyhow::anyhow!("Unsupported backend!"));
     }

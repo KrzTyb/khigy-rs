@@ -20,14 +20,6 @@ impl XdgShellHandler for KhigyState {
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
 
-    fn reposition_request(
-        &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
-    ) {
-    }
-
     fn move_request(&mut self, _surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
     }
 
@@ -41,6 +33,14 @@ impl XdgShellHandler for KhigyState {
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
+
+    fn reposition_request(
+        &mut self,
+        _surface: PopupSurface,
+        _positioner: PositionerState,
+        _token: u32,
+    ) {
+    }
 }
 
 // Xdg Shell
