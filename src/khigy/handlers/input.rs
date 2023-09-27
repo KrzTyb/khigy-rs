@@ -1,7 +1,7 @@
 use smithay::backend::input::{InputBackend, InputEvent};
 
-use crate::khigy::KhigyState;
+use crate::khigy;
 
-impl KhigyState {
+impl khigy::State {
     pub fn process_input_event<I: InputBackend>(&mut self, _event: InputEvent<I>) {}
 }

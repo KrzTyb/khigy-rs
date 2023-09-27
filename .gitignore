@@ -5,3 +5,6 @@
 
 # RustRover files
 .idea
+
+# rust-analyzer
+.cache

@@ -1,19 +1,10 @@
-use crate::khigy;
+use std::time::Duration;
+
 use anyhow::Result;
 use smithay::{
     backend::{
-        renderer::{
-            element::{
-                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                Kind,
-            },
-            gles::GlesRenderer,
-            utils::draw_render_elements,
-            Frame, Renderer,
-        },
-        winit::{
-            self as winit_smithay, WinitError, WinitEvent, WinitEventLoop, WinitGraphicsBackend,
-        },
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
+        winit::{WinitError, WinitEvent, WinitEventLoop, WinitGraphicsBackend},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
@@ -21,40 +12,93 @@ use smithay::{
             timer::{TimeoutAction, Timer},
             EventLoop,
         },
-        wayland_server::protocol::wl_surface,
-        winit,
+        wayland_server::Display,
+        winit::window::WindowBuilder,
     },
-    utils::{Rectangle, Transform},
-    wayland::compositor::{with_surface_tree_downward, SurfaceAttributes, TraversalAction},
+    utils::{Physical, Rectangle, Size, Transform},
 };
-use std::time::Duration;
 
-pub fn run(event_loop: &mut EventLoop<crate::LoopData>, data: &mut crate::LoopData) -> Result<()> {
-    let display = &mut data.display;
+use crate::khigy;
 
-    let (mut backend, mut winit_event_loop) = winit_smithay::init_from_builder::<GlesRenderer>(
-        winit::window::WindowBuilder::new()
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
-            .with_title("Khigy")
-            .with_visible(true),
-    )
-    .map_err(|error| anyhow::anyhow!("Init winit window failed. Reason: {}", error.to_string()))?;
+pub struct WinitBackend {
+    graphics_backend: WinitGraphicsBackend<GlesRenderer>,
+    winit_event_loop: WinitEventLoop,
+    output: Output,
+    damage_tracker: OutputDamageTracker,
+}
 
-    let mode = Mode {
-        size: backend.window_size().physical_size,
-        refresh: 60_000,
-    };
+pub fn create_backend(
+    event_loop: &mut EventLoop<khigy::LoopData>,
+    data: &mut khigy::LoopData,
+) -> Result<()> {
+    let window_builder = WindowBuilder::new().with_title("Khigy");
 
+    let (winit_graphics_backend, winit) =
+        smithay::backend::winit::init_from_builder::<GlesRenderer>(window_builder).map_err(
+            |error| {
+                anyhow::anyhow!(
+                    "Failed to create winit backend. Reason: {}",
+                    error.to_string()
+                )
+            },
+        )?;
+
+    // Create output (winit has single output)
+    let output = create_output(
+        &mut data.display,
+        winit_graphics_backend.window_size().physical_size,
+    );
+    let damage_tracker = OutputDamageTracker::from_output(&output);
+
+    data.backend = khigy::Backend::Winit(WinitBackend {
+        graphics_backend: winit_graphics_backend,
+        winit_event_loop: winit,
+        output,
+        damage_tracker,
+    });
+
+    let timer = Timer::immediate();
+    event_loop
+        .handle()
+        .insert_source(timer, move |_, _, data| {
+            if let Err(error) = process_winit(data) {
+                log::error!("Failed to process winit! Reason: {}", error);
+                data.state.loop_signal.stop();
+                return TimeoutAction::Drop;
+            }
+            TimeoutAction::ToDuration(Duration::from_millis(16))
+        })
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to insert timer source for winit dispatch. Reason: {}",
+                error
+            )
+        })?;
+
+    Ok(())
+}
+
+fn create_output(
+    display: &mut Display<khigy::State>,
+    physical_size: Size<i32, Physical>,
+) -> Output {
     let output = Output::new(
-        "winit".to_string(),
+        "WinitOutput".into(),
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
             make: "Khigy".into(),
-            model: "Winit".into(),
+            model: "WinitModel".into(),
         },
     );
-    let _global = output.create_global::<khigy::KhigyState>(&display.handle());
+
+    let _global = output.create_global::<khigy::State>(&display.handle());
+
+    let mode = Mode {
+        size: physical_size,
+        refresh: 60_000,
+    };
+
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),
@@ -63,121 +107,46 @@ pub fn run(event_loop: &mut EventLoop<crate::LoopData>, data: &mut crate::LoopDa
     );
     output.set_preferred(mode);
 
-    let timer = Timer::immediate();
-    event_loop
-        .handle()
-        .insert_source(timer, move |_, _, data| {
-            winit_dispatch(&mut backend, &mut winit_event_loop, data, &output).unwrap();
-            TimeoutAction::ToDuration(Duration::from_millis(16))
-        })
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "Failed to insert event loop source. Reason: {}",
-                error.to_string()
-            )
-        })?;
-
-    Ok(())
+    output
 }
 
-pub fn winit_dispatch(
-    backend: &mut WinitGraphicsBackend<GlesRenderer>,
-    winit: &mut WinitEventLoop,
-    data: &mut crate::LoopData,
-    output: &Output,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let display = &mut data.display;
-    let state = &mut data.state;
+fn process_winit(data: &mut khigy::LoopData) -> Result<()> {
+    let winit_backend = match &mut data.backend {
+        khigy::Backend::Winit(backend) => backend,
+        _ => unreachable!("Other backend in winit event loop!"),
+    };
 
-    let res = winit.dispatch_new_events(|event| match event {
-        WinitEvent::Resized { size, .. } => {
-            output.change_current_state(
-                Some(Mode {
-                    size,
-                    refresh: 60_000,
-                }),
-                None,
-                None,
-                None,
-            );
-        }
-        WinitEvent::Input(event) => state.process_input_event(event),
-        _ => (),
-    });
+    let size = winit_backend.graphics_backend.window_size().physical_size;
+    let damage = Rectangle::from_loc_and_size((0, 0), size);
+
+    let res = winit_backend
+        .winit_event_loop
+        .dispatch_new_events(|event| match event {
+            WinitEvent::Resized { size, .. } => {
+                winit_backend.output.change_current_state(
+                    Some(Mode {
+                        size,
+                        refresh: 60_000,
+                    }),
+                    None,
+                    None,
+                    None,
+                );
+            }
+            WinitEvent::Input(event) => data.state.process_input_event(event),
+            _ => (),
+        });
 
     if let Err(WinitError::WindowClosed) = res {
-        // Stop the loop
-        state.loop_signal.stop();
-
+        data.state.loop_signal.stop();
         return Ok(());
     } else {
         res?;
     }
 
-    backend.bind()?;
+    winit_backend.graphics_backend.bind()?;
+    winit_backend.graphics_backend.submit(Some(&[damage]))?;
 
-    let size = backend.window_size().physical_size;
-    let damage = Rectangle::from_loc_and_size((0, 0), size);
-
-    let elements = state
-        .xdg_shell_state
-        .toplevel_surfaces()
-        .iter()
-        .flat_map(|surface| {
-            render_elements_from_surface_tree(
-                backend.renderer(),
-                surface.wl_surface(),
-                (0, 0),
-                1.0,
-                1.0,
-                Kind::Unspecified,
-            )
-        })
-        .collect::<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>();
-
-    let mut frame = backend
-        .renderer()
-        .render(size, Transform::Flipped180)
-        .unwrap();
-    frame.clear([0.0, 0.0, 0.0, 1.0], &[damage]).unwrap();
-    draw_render_elements(&mut frame, 1.0, &elements, &[damage]).unwrap();
-    // We rely on the nested compositor to do the sync for us
-    let _ = frame.finish().unwrap();
-
-    for surface in state.xdg_shell_state.toplevel_surfaces() {
-        send_frames_surface_tree(
-            surface.wl_surface(),
-            state.start_time.elapsed().as_millis() as u32,
-        );
-    }
-
-    display.dispatch_clients(state)?;
-    display.flush_clients()?;
-
-    // It is important that all events on the display have been dispatched and flushed to clients before
-    // swapping buffers because this operation may block.
-    backend.submit(Some(&[damage])).unwrap();
-
+    data.display.flush_clients()?;
     Ok(())
-}
-
-pub fn send_frames_surface_tree(surface: &wl_surface::WlSurface, time: u32) {
-    with_surface_tree_downward(
-        surface,
-        (),
-        |_, _, &()| TraversalAction::DoChildren(()),
-        |_surf, states, &()| {
-            // the surface may not have any user_data if it is a subsurface and has not
-            // yet been committed
-            for callback in states
-                .cached_state
-                .current::<SurfaceAttributes>()
-                .frame_callbacks
-                .drain(..)
-            {
-                callback.done(time);
-            }
-        },
-        |_, _, &()| true,
-    );
 }
